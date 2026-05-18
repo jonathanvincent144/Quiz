@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import axios from 'axios';
 import dotenv from 'dotenv';
 
@@ -157,7 +156,8 @@ app.post('/api/config', (req, res) => {
 });
 
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -166,6 +166,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
+    // SPA fallback handled by vercel.json rewrites or this:
     app.get(/^(?!\/api).+/, (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
@@ -178,7 +179,8 @@ async function startServer() {
   }
 }
 
-if (!process.env.VERCEL || process.env.NODE_ENV !== 'production') {
+// No automatic startServer() call here when on Vercel
+if (!process.env.VERCEL) {
   startServer();
 }
 
