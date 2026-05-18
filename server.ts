@@ -7,10 +7,12 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-export { app }; 
-const PORT = 3000;
-
 app.use(express.json());
+
+// Export the app for Vercel
+export { app }; 
+
+const PORT = 3000;
 
 // In-memory state
 let relayStates = {
