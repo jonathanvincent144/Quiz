@@ -1,0 +1,8 @@
+{
+  "name": "ESP32 IoT Dashboard",
+  "description": "Interface kontrol IoT via Telegram Bot dengan monitoring sensor DHT11 dan kontrol relay.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
