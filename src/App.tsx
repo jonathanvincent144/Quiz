@@ -226,7 +226,7 @@ export default function App() {
             <div className="space-y-3">
               <StatusRow label="Telegram Bot" status={telegramConfigured ? 'READY' : 'OFFLINE'} type={telegramConfigured ? 'success' : 'danger'} />
               <StatusRow label="ESP32 Device" status={espStatus?.isOnline ? 'ONLINE' : 'OFFLINE'} type={espStatus?.isOnline ? 'success' : 'danger'} />
-              <StatusRow label="Backend API" status={apiStatus === 'Online' ? 'STABLE' : 'ERROR'} type={apiStatus === 'Online' ? 'success' : 'danger'} />
+              <StatusRow label="Backend API" status={apiStatus || (error ? 'ERROR' : 'OFFLINE')} type={apiStatus === 'Online' ? 'success' : (error ? 'danger' : 'warning')} />
             </div>
           </div>
 
