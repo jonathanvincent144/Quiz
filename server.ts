@@ -1,18 +1,19 @@
 import express from 'express';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import path from 'path';
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-// In-memory state
+// In-memory state (Note: ephemeral in Vercel)
 let relayStates = {
-  relay1: { pin: 5, state: false, name: 'Main Lights' },
-  relay2: { pin: 19, state: false, name: 'Cooling Fan' },
-  relay3: { pin: 18, state: false, name: 'Water Pump' },
-  relay4: { pin: 23, state: false, name: 'External Aux' },
+  relay1: { pin: 5, state: false, name: 'Relay 1' },
+  relay2: { pin: 19, state: false, name: 'Relay 2' },
+  relay3: { pin: 18, state: false, name: 'Relay 3' },
+  relay4: { pin: 23, state: false, name: 'Relay 4' },
 };
 
 let sensorData = {
@@ -72,7 +73,7 @@ app.post('/api/esp/data', (req, res) => {
   if (temperature !== undefined && humidity !== undefined) {
     sensorData = { temperature, humidity, lastUpdate: Date.now() };
     sensorHistory.push({
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       temperature,
       humidity,
     });
@@ -107,6 +108,18 @@ app.post('/api/relay/toggle', async (req, res) => {
   }
 });
 
+app.post('/api/relay/all', async (req, res) => {
+  const { state } = req.body;
+  const isOn = !!state;
+  
+  Object.keys(relayStates).forEach((key) => {
+    (relayStates as any)[key].state = isOn;
+  });
+
+  await sendTelegram(`🔌 *Master Control*: All relays are now *${isOn ? 'ON' : 'OFF'}*`);
+  res.json({ success: true, state: isOn });
+});
+
 app.post('/api/config', (req, res) => {
   const { botToken, chatId } = req.body;
   if (botToken) config.botToken = botToken;
@@ -114,6 +127,36 @@ app.post('/api/config', (req, res) => {
   sendTelegram('🚀 *Config Updated*');
   res.json({ success: true });
 });
+
+// Vite/Serve Logic for Local Development
+async function startServer() {
+  const PORT = 3000;
+  
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  if (!process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
+  }
+}
+
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 export { app };
 export default app;

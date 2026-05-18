@@ -12,7 +12,10 @@ import {
   Power,
   CheckCircle2,
   XCircle,
-  AlertCircle
+  AlertCircle,
+  Mic,
+  MicOff,
+  Radio
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -42,6 +45,9 @@ export default function App() {
   const [configOpen, setConfigOpen] = useState(false);
   const [btnLoading, setBtnLoading] = useState<string | null>(null);
   const [configForm, setConfigForm] = useState({ botToken: '', chatId: '' });
+  const [isListening, setIsListening] = useState(false);
+  const [voiceTooltip, setVoiceTooltip] = useState<string | null>(null);
+  const [isRunningVariation, setIsRunningVariation] = useState<string | null>(null);
 
   const fetchData = async () => {
     try {
@@ -76,6 +82,134 @@ export default function App() {
     } finally {
       setBtnLoading(null);
     }
+  };
+
+  const toggleAll = async (state: boolean) => {
+    setBtnLoading('master-' + state);
+    try {
+      await axios.post('/api/relay/all', { state });
+      await fetchData();
+    } catch (err) {
+      alert('Gagal mengubah status semua relay');
+    } finally {
+      setBtnLoading(null);
+    }
+  };
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const runVariation1 = async () => {
+    if (isRunningVariation) return;
+    setIsRunningVariation('v1');
+    setVoiceTooltip("Menjalankan Variasi 1...");
+    try {
+      const sequence = ['relay1', 'relay2', 'relay3', 'relay4'];
+      for (let i = 0; i < 2; i++) {
+        // ON
+        for (const id of sequence) {
+          await axios.post('/api/relay/toggle', { relayId: id });
+          await sleep(500);
+          await fetchData();
+        }
+        await sleep(1000);
+        // OFF
+        for (const id of sequence) {
+          await axios.post('/api/relay/toggle', { relayId: id });
+          await sleep(500);
+          await fetchData();
+        }
+        if (i === 0) await sleep(1000);
+      }
+    } catch (err) {
+      console.error('Variation 1 failed', err);
+    } finally {
+      setIsRunningVariation(null);
+      setVoiceTooltip(null);
+    }
+  };
+
+  const runVariation2 = async () => {
+    if (isRunningVariation) return;
+    setIsRunningVariation('v2');
+    setVoiceTooltip("Menjalankan Variasi 2...");
+    try {
+      const sequence = ['relay1', 'relay3', 'relay2', 'relay4'];
+      for (let i = 0; i < 2; i++) {
+        // ON
+        for (const id of sequence) {
+          await axios.post('/api/relay/toggle', { relayId: id });
+          await sleep(500);
+          await fetchData();
+        }
+        await sleep(1000);
+        // OFF
+        for (const id of sequence) {
+          await axios.post('/api/relay/toggle', { relayId: id });
+          await sleep(500);
+          await fetchData();
+        }
+        if (i === 0) await sleep(1000);
+      }
+    } catch (err) {
+      console.error('Variation 2 failed', err);
+    } finally {
+      setIsRunningVariation(null);
+      setVoiceTooltip(null);
+    }
+  };
+
+  const handleVoiceCommand = (command: string) => {
+    const cmd = command.toLowerCase();
+    setVoiceTooltip(`Mendengar: "${command}"`);
+    setTimeout(() => { if (!isRunningVariation) setVoiceTooltip(null); }, 3000);
+
+    if (cmd.includes('variasi 1') || cmd.includes('variasi satu')) {
+      runVariation1();
+    } else if (cmd.includes('variasi 2') || cmd.includes('variasi dua')) {
+      runVariation2();
+    } else if (cmd.includes('hidupkan semua') || cmd.includes('nyalakan semua')) {
+      toggleAll(true);
+    } else if (cmd.includes('matikan semua')) {
+      toggleAll(false);
+    } else if (cmd.includes('hidupkan relay 1') || cmd.includes('nyalakan relay 1')) {
+      if (!relayStates.relay1.state) toggleRelay('relay1');
+    } else if (cmd.includes('matikan relay 1')) {
+      if (relayStates.relay1.state) toggleRelay('relay1');
+    } else if (cmd.includes('hidupkan relay 2') || cmd.includes('nyalakan relay 2')) {
+      if (!relayStates.relay2.state) toggleRelay('relay2');
+    } else if (cmd.includes('matikan relay 2')) {
+      if (relayStates.relay2.state) toggleRelay('relay2');
+    } else if (cmd.includes('hidupkan relay 3') || cmd.includes('nyalakan relay 3')) {
+      if (!relayStates.relay3.state) toggleRelay('relay3');
+    } else if (cmd.includes('matikan relay 3')) {
+      if (relayStates.relay3.state) toggleRelay('relay3');
+    } else if (cmd.includes('hidupkan relay 4') || cmd.includes('nyalakan relay 4')) {
+      if (!relayStates.relay4.state) toggleRelay('relay4');
+    } else if (cmd.includes('matikan relay 4')) {
+      if (relayStates.relay4.state) toggleRelay('relay4');
+    }
+  };
+
+  const startListening = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Browser Anda tidak mendukung perintah suara.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'id-ID';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onresult = (event: any) => {
+      const speechToText = event.results[0][0].transcript;
+      handleVoiceCommand(speechToText);
+    };
+
+    recognition.start();
   };
 
   const saveConfig = async (e: React.FormEvent) => {
@@ -121,6 +255,26 @@ export default function App() {
           </div>
           <div className="hidden lg:block text-sm text-slate-500 font-mono">ID: ESP32_4A9B11</div>
           <button 
+            onClick={startListening}
+            className={cn(
+              "p-2 rounded-lg transition-all relative group",
+              isListening ? "bg-red-500/10 text-red-500" : "hover:bg-slate-800 text-slate-400 hover:text-white"
+            )}
+          >
+            {isListening ? (
+              <div className="relative">
+                <Mic size={20} className="animate-pulse" />
+                <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-ping" />
+              </div>
+            ) : <Mic size={20} />}
+            
+            {voiceTooltip && (
+              <div className="absolute top-full right-0 mt-3 bg-brand-card border border-slate-700 px-3 py-1.5 rounded-lg text-[10px] whitespace-nowrap shadow-2xl z-50 text-indigo-400">
+                {voiceTooltip}
+              </div>
+            )}
+          </button>
+          <button 
             onClick={() => setConfigOpen(true)}
             className="p-2 hover:bg-slate-800 rounded-lg transition-colors group"
           >
@@ -140,7 +294,7 @@ export default function App() {
             {/* Temperature Card */}
             <div className="bg-brand-card border border-slate-800 rounded-2xl p-6 relative overflow-hidden group">
               <div className="relative z-10">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Temperature (DHT11)</p>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Temperature</p>
                 <div className="mt-2 flex items-baseline">
                   <span className="text-5xl font-light text-white tabular-nums">{sensorData?.temperature || 0}</span>
                   <span className="text-2xl text-slate-500 ml-1">°C</span>
@@ -182,15 +336,69 @@ export default function App() {
 
           {/* Relay Control Interface */}
           <div className="flex-1 bg-brand-card border border-slate-800 rounded-2xl p-6">
-            <h3 className="text-sm font-semibold text-white mb-6 flex items-center">
-              <span className="w-1.5 h-4 bg-indigo-500 rounded-full mr-2"></span>
-              RELAY CONTROL INTERFACE
-            </h3>
+            <div className="flex flex-col gap-6 mb-8">
+              <h3 className="text-sm font-semibold text-white flex items-center">
+                <span className="w-1.5 h-4 bg-indigo-500 rounded-full mr-2"></span>
+                RELAY CONTROL INTERFACE
+              </h3>
+              
+              <div className="flex flex-col gap-4">
+                {/* Global Controls Row */}
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => toggleAll(true)}
+                    disabled={!!btnLoading || !!isRunningVariation}
+                    className="flex-1 px-4 py-3 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 text-[10px] font-bold uppercase tracking-widest rounded-xl border border-emerald-500/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    {btnLoading === 'master-true' ? <RefreshCw size={14} className="animate-spin" /> : <Power size={14} />}
+                    ON ALL
+                  </button>
+                  <button 
+                    onClick={() => toggleAll(false)}
+                    disabled={!!btnLoading || !!isRunningVariation}
+                    className="flex-1 px-4 py-3 bg-red-600/10 hover:bg-red-600/20 text-red-400 text-[10px] font-bold uppercase tracking-widest rounded-xl border border-red-500/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    {btnLoading === 'master-false' ? <RefreshCw size={14} className="animate-spin" /> : <Power size={14} />}
+                    OFF ALL
+                  </button>
+                </div>
+
+                {/* Variations Row */}
+                <div className="flex gap-3">
+                  <button 
+                    onClick={runVariation1}
+                    disabled={!!isRunningVariation}
+                    className={cn(
+                      "flex-1 px-4 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl border transition-all flex items-center justify-center gap-2",
+                      isRunningVariation === 'v1' 
+                        ? "bg-indigo-600 text-white border-indigo-500 shadow-[0_0_15px_rgba(79,70,229,0.4)]" 
+                        : "bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border-indigo-500/30"
+                    )}
+                  >
+                    <Radio size={14} className={isRunningVariation === 'v1' ? "animate-pulse" : ""} />
+                    VARIASI 1
+                  </button>
+                  <button 
+                    onClick={runVariation2}
+                    disabled={!!isRunningVariation}
+                    className={cn(
+                      "flex-1 px-4 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl border transition-all flex items-center justify-center gap-2",
+                      isRunningVariation === 'v2' 
+                        ? "bg-amber-600 text-white border-amber-500 shadow-[0_0_15px_rgba(217,119,6,0.4)]" 
+                        : "bg-amber-600/10 hover:bg-amber-600/20 text-amber-400 border-amber-500/30"
+                    )}
+                  >
+                    <Radio size={14} className={isRunningVariation === 'v2' ? "animate-pulse" : ""} />
+                    VARIASI 2
+                  </button>
+                </div>
+              </div>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {Object.entries(relayStates || {}).map(([id, relay]: any) => (
+              {Object.entries(relayStates || {}).map(([id, relay]: any, idx: number) => (
                 <div key={id} className="bg-brand-bg border border-slate-700 p-5 rounded-xl flex items-center justify-between hover:border-slate-500 transition-colors">
                   <div>
-                    <p className="text-[10px] text-slate-500 font-mono uppercase tracking-wider mb-0.5">PIN {relay.pin.toString().padStart(2, '0')}</p>
+                    <p className="text-[10px] text-slate-500 font-mono uppercase tracking-wider mb-0.5">Ch-0{idx + 1}</p>
                     <h4 className="text-base font-medium text-white">{relay.name}</h4>
                   </div>
                   <button 
