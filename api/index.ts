@@ -7,57 +7,6 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-const COORDINATOR_URL = 'https://keyvalue.immanuel.co/api/KeyVal/GetValue/987ff58c_iotel/active_rest_id';
-const UPDATE_COORDINATOR_URL = 'https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/987ff58c_iotel/active_rest_id';
-
-let activeId: string | null = null;
-const knownBadIds = new Set<string>();
-
-async function getSyncUrl(): Promise<string> {
-  if (activeId && !knownBadIds.has(activeId)) {
-    return `https://api.restful-api.dev/objects/${activeId}`;
-  }
-  
-  try {
-    const res = await axios.get(COORDINATOR_URL, { timeout: 2000 });
-    if (res.data && typeof res.data === 'string' && res.data.startsWith('ff80')) {
-      const fetchedId = res.data.trim();
-      if (!knownBadIds.has(fetchedId)) {
-        activeId = fetchedId;
-        return `https://api.restful-api.dev/objects/${activeId}`;
-      }
-    }
-  } catch (err: any) {
-    console.log('Coordinator read error, generating dynamic replacement:', err.message);
-  }
-  
-  await createNewSyncObject();
-  return `https://api.restful-api.dev/objects/${activeId}`;
-}
-
-async function createNewSyncObject() {
-  try {
-    const res = await axios.post('https://api.restful-api.dev/objects', {
-      name: 'ESP32_IoT_Dashboard_State',
-      data: {
-        relayStates,
-        sensorData,
-        sensorHistory,
-        espStatus,
-        config
-      }
-    }, { timeout: 2000 });
-    if (res.data && res.data.id) {
-      activeId = res.data.id;
-      // Register with the coordinator
-      await axios.post(`${UPDATE_COORDINATOR_URL}/${activeId}`, {}, { timeout: 2000 });
-      console.log('Registered self-healing sync ID in prod:', activeId);
-    }
-  } catch (err: any) {
-    console.log('Sync creation error in prod:', err.message);
-  }
-}
-
 // In-memory state (acts as cache/fallback)
 let relayStates = {
   relay1: { pin: 5, state: false, name: 'Relay 1' },
@@ -73,6 +22,8 @@ let sensorData = {
 };
 
 let sensorHistory: any[] = [];
+const MAX_HISTORY = 15;
+
 let espStatus = {
   isOnline: false,
   lastPing: 0,
@@ -80,6 +31,7 @@ let espStatus = {
   publicIp: '',
 };
 
+// Telegram Config
 const config = {
   botToken: process.env.BOT_TOKEN || '',
   chatId: process.env.CHAT_ID || '',
@@ -96,67 +48,53 @@ async function pullState() {
   lastPullTime = now;
 
   try {
-    const url = await getSyncUrl();
-    const res = await axios.get(url, { timeout: 2000 });
-    if (res.data && res.data.data) {
-      const db = res.data.data;
-      if (db.relayStates) {
-        relayStates = {
-          relay1: { pin: 5, state: db.relayStates.relay1?.state ?? false, name: db.relayStates.relay1?.name || 'Relay 1' },
-          relay2: { pin: 19, state: db.relayStates.relay2?.state ?? false, name: db.relayStates.relay2?.name || 'Relay 2' },
-          relay3: { pin: 18, state: db.relayStates.relay3?.state ?? false, name: db.relayStates.relay3?.name || 'Relay 3' },
-          relay4: { pin: 23, state: db.relayStates.relay4?.state ?? false, name: db.relayStates.relay4?.name || 'Relay 4' },
-        };
+    const url = 'https://keyvalue.immanuel.co/api/KeyVal/GetValue/987ff58c_iotel/state';
+    const res = await axios.get(url, { timeout: 3000 });
+    if (res.data && typeof res.data === 'string') {
+      let cleanHex = res.data.trim();
+      if (cleanHex.startsWith('"') && cleanHex.endsWith('"')) {
+        cleanHex = cleanHex.slice(1, -1);
       }
-      if (db.sensorData) sensorData = db.sensorData;
-      if (db.sensorHistory) sensorHistory = db.sensorHistory;
-      if (db.espStatus) espStatus = db.espStatus;
-      if (db.config) {
-        if (db.config.botToken) config.botToken = db.config.botToken;
-        if (db.config.chatId) config.chatId = db.config.chatId;
+      if (cleanHex && /^[0-9a-fA-F]+$/.test(cleanHex)) {
+        const decoded = Buffer.from(cleanHex, 'hex').toString('utf8');
+        const db = JSON.parse(decoded);
+        if (db.relayStates) {
+          relayStates = {
+            relay1: { pin: 5, state: db.relayStates.relay1?.state ?? false, name: db.relayStates.relay1?.name || 'Relay 1' },
+            relay2: { pin: 19, state: db.relayStates.relay2?.state ?? false, name: db.relayStates.relay2?.name || 'Relay 2' },
+            relay3: { pin: 18, state: db.relayStates.relay3?.state ?? false, name: db.relayStates.relay3?.name || 'Relay 3' },
+            relay4: { pin: 23, state: db.relayStates.relay4?.state ?? false, name: db.relayStates.relay4?.name || 'Relay 4' },
+          };
+        }
+        if (db.sensorData) sensorData = db.sensorData;
+        if (db.sensorHistory) sensorHistory = db.sensorHistory;
+        if (db.espStatus) espStatus = db.espStatus;
+        if (db.config) {
+          if (db.config.botToken) config.botToken = db.config.botToken;
+          if (db.config.chatId) config.chatId = db.config.chatId;
+        }
       }
     }
   } catch (error: any) {
     console.log('Sync pull note in prod:', error.message);
-    if (error.response && (error.response.status === 404 || error.response.status === 405)) {
-      console.log('Sync ID expired, resetting active ID in prod...');
-      const badId = activeId;
-      if (badId) {
-        knownBadIds.add(badId);
-      }
-      activeId = null;
-      await createNewSyncObject();
-    }
   }
 }
 
 async function pushState() {
   try {
-    const url = await getSyncUrl();
-    await axios.put(url, {
-      name: 'ESP32_IoT_Dashboard_State',
-      data: {
-        relayStates,
-        sensorData,
-        sensorHistory,
-        espStatus,
-        config
-      }
-    }, { 
-      timeout: 2000,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    const stateObj = {
+      relayStates,
+      sensorData,
+      sensorHistory,
+      espStatus,
+      config
+    };
+    const serialized = JSON.stringify(stateObj);
+    const hexValue = Buffer.from(serialized, 'utf8').toString('hex');
+    const url = `https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/987ff58c_iotel/state/${hexValue}`;
+    await axios.post(url, {}, { timeout: 3000 });
   } catch (error: any) {
     console.log('Sync push error in prod:', error.message);
-    if (error.response && (error.response.status === 404 || error.response.status === 405)) {
-      console.log('Sync ID expired during push, resetting active ID in prod...');
-      const badId = activeId;
-      if (badId) {
-        knownBadIds.add(badId);
-      }
-      activeId = null;
-      await createNewSyncObject();
-    }
   }
 }
 

@@ -64,6 +64,12 @@ export default function App() {
   const [localLanToggle, setLocalLanToggle] = useState(directLanMode);
   const [localPattern, setLocalPattern] = useState(lanEndpointPattern);
 
+  const disableDirectLanMode = () => {
+    localStorage.setItem('directLanMode', 'false');
+    setDirectLanMode(false);
+    setLocalLanToggle(false);
+  };
+
   const fetchData = async () => {
     try {
       const [statusRes, historyRes] = await Promise.all([
@@ -134,12 +140,12 @@ export default function App() {
       try {
         if (lanEndpointPattern === 'query_pin') {
           const pin = pinMap[relayId] || 5;
-          await axios.get(`http://${espIp}/toggle?pin=${pin}&state=${targetState ? 1 : 0}`, { timeout: 1500 });
+          await axios.get(`http://${espIp}/toggle?pin=${pin}&state=${targetState ? 1 : 0}`, { timeout: 5000 });
         } else if (lanEndpointPattern === 'query_relayId') {
-          await axios.get(`http://${espIp}/toggle?relayId=${relayId}`, { timeout: 1500 });
+          await axios.get(`http://${espIp}/toggle?relayId=${relayId}`, { timeout: 5000 });
         } else {
           // json_post API (matches our standard backend `/api/relay/toggle` body format)
-          await axios.post(`http://${espIp}/api/relay/toggle`, { relayId }, { timeout: 1500 });
+          await axios.post(`http://${espIp}/api/relay/toggle`, { relayId }, { timeout: 5000 });
         }
 
         // Keep cloud syncing in the background for active integration logs and consistency
@@ -194,13 +200,13 @@ export default function App() {
       try {
         if (lanEndpointPattern === 'query_pin') {
           await Promise.all([
-            axios.get(`http://${espIp}/toggle?pin=5&state=${state ? 1 : 0}`, { timeout: 1500 }),
-            axios.get(`http://${espIp}/toggle?pin=19&state=${state ? 1 : 0}`, { timeout: 1500 }),
-            axios.get(`http://${espIp}/toggle?pin=18&state=${state ? 1 : 0}`, { timeout: 1500 }),
-            axios.get(`http://${espIp}/toggle?pin=23&state=${state ? 1 : 0}`, { timeout: 1500 }),
+            axios.get(`http://${espIp}/toggle?pin=5&state=${state ? 1 : 0}`, { timeout: 5000 }),
+            axios.get(`http://${espIp}/toggle?pin=19&state=${state ? 1 : 0}`, { timeout: 5000 }),
+            axios.get(`http://${espIp}/toggle?pin=18&state=${state ? 1 : 0}`, { timeout: 5000 }),
+            axios.get(`http://${espIp}/toggle?pin=23&state=${state ? 1 : 0}`, { timeout: 5000 }),
           ]);
         } else {
-          await axios.post(`http://${espIp}/api/relay/all`, { state }, { timeout: 1500 });
+          await axios.post(`http://${espIp}/api/relay/all`, { state }, { timeout: 5000 });
         }
 
         // Keep cloud syncing in background
@@ -208,7 +214,7 @@ export default function App() {
       } catch (err: any) {
         console.error('Direct LAN Master toggle failed:', err);
         fetchData();
-        alert(`Koneksi Langsung Master Gagal!\nIP: http://${espIp}\nError: ${err.message}`);
+        alert(`Koneksi Langsung Master Gagal!\nIP: http://${espIp}\nError: ${err.message}\n\nJika koneksi melambat atau gagal, pertimbangkan untuk meningkatkan performa ESP32 Anda atau mematikan Mode LAN Langsung.`);
       } finally {
         setBtnLoading(null);
       }
@@ -434,6 +440,27 @@ export default function App() {
         {/* Left Column: Sensors & Controls (8/12) */}
         <div className="md:col-span-8 space-y-6 flex flex-col">
           
+          {directLanMode && (
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-amber-400 font-bold text-xs uppercase tracking-wider">
+                  <Cpu className="animate-pulse" size={16} />
+                  <span>Mode LAN Langsung Aktif (IP: {espIp})</span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed max-w-xl">
+                  Sinyal dikirim langsung dari browser ke IP lokal ESP32 Anda. Jika terjadi <strong className="text-amber-300">timeout / error</strong>, pastikan HP/Laptop Anda berada dalam satu jaringan Wi-Fi, dan ubah pengaturan browser Anda untuk <strong>mengizinkan "Insecure Content"</strong> (Mixed Content HTTP di situs HTTPS).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={disableDirectLanMode}
+                className="bg-slate-800 hover:bg-slate-700 hover:text-white text-slate-300 border border-slate-700/80 px-4 py-2 rounded-xl text-[11px] font-bold whitespace-nowrap transition-colors"
+              >
+                Matikan Mode LAN
+              </button>
+            </div>
+          )}
+
           {/* Sensor Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Temperature Card */}
