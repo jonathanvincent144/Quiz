@@ -7,7 +7,51 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-const SYNC_URL = 'https://api.restful-api.dev/objects/ff8081819d82fab6019e4e3895cd671d';
+const COORDINATOR_URL = 'https://keyvalue.immanuel.co/api/KeyVal/GetValue/987ff58c_iotel/active_rest_id';
+const UPDATE_COORDINATOR_URL = 'https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/987ff58c_iotel/active_rest_id';
+
+let activeId: string | null = null;
+
+async function getSyncUrl(): Promise<string> {
+  if (activeId) {
+    return `https://api.restful-api.dev/objects/${activeId}`;
+  }
+  
+  try {
+    const res = await axios.get(COORDINATOR_URL, { timeout: 2000 });
+    if (res.data && typeof res.data === 'string' && res.data.startsWith('ff80')) {
+      activeId = res.data.trim();
+      return `https://api.restful-api.dev/objects/${activeId}`;
+    }
+  } catch (err: any) {
+    console.log('Coordinator read error, generating dynamic replacement:', err.message);
+  }
+  
+  await createNewSyncObject();
+  return `https://api.restful-api.dev/objects/${activeId}`;
+}
+
+async function createNewSyncObject() {
+  try {
+    const res = await axios.post('https://api.restful-api.dev/objects', {
+      name: 'ESP32_IoT_Dashboard_State',
+      data: {
+        relayStates,
+        sensorData,
+        sensorHistory,
+        espStatus,
+        config
+      }
+    }, { timeout: 2000 });
+    if (res.data && res.data.id) {
+      activeId = res.data.id;
+      await axios.post(`${UPDATE_COORDINATOR_URL}/${activeId}`, {}, { timeout: 2000 });
+      console.log('Registered self-healing sync ID in prod:', activeId);
+    }
+  } catch (err: any) {
+    console.log('Sync creation error in prod:', err.message);
+  }
+}
 
 // In-memory state (acts as cache/fallback)
 let relayStates = {
@@ -37,10 +81,18 @@ const config = {
 // Sync helpers
 async function pullState() {
   try {
-    const res = await axios.get(SYNC_URL, { timeout: 2000 });
+    const url = await getSyncUrl();
+    const res = await axios.get(url, { timeout: 2000 });
     if (res.data && res.data.data) {
       const db = res.data.data;
-      if (db.relayStates) relayStates = db.relayStates;
+      if (db.relayStates) {
+        relayStates = {
+          relay1: db.relayStates.relay1 || { pin: 5, state: false, name: 'Relay 1' },
+          relay2: db.relayStates.relay2 || { pin: 19, state: false, name: 'Relay 2' },
+          relay3: db.relayStates.relay3 || { pin: 18, state: false, name: 'Relay 3' },
+          relay4: db.relayStates.relay4 || { pin: 23, state: false, name: 'Relay 4' },
+        };
+      }
       if (db.sensorData) sensorData = db.sensorData;
       if (db.sensorHistory) sensorHistory = db.sensorHistory;
       if (db.espStatus) espStatus = db.espStatus;
@@ -50,14 +102,18 @@ async function pullState() {
       }
     }
   } catch (error: any) {
-    // Graceful fallback debug log
-    console.log('Sync pull note:', error.message);
+    console.log('Sync pull note in prod:', error.message);
+    if (error.response && (error.response.status === 404 || error.response.status === 405)) {
+      console.log('Sync ID expired, resetting active ID in prod...');
+      activeId = null;
+    }
   }
 }
 
 async function pushState() {
   try {
-    await axios.put(SYNC_URL, {
+    const url = await getSyncUrl();
+    await axios.put(url, {
       name: 'ESP32_IoT_Dashboard_State',
       data: {
         relayStates,
@@ -71,7 +127,11 @@ async function pushState() {
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error: any) {
-    console.log('Sync push error:', error.message);
+    console.log('Sync push error in prod:', error.message);
+    if (error.response && (error.response.status === 404 || error.response.status === 405)) {
+      console.log('Sync ID expired during push, resetting active ID in prod...');
+      activeId = null;
+    }
   }
 }
 
