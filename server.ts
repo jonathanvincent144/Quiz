@@ -12,17 +12,21 @@ const COORDINATOR_URL = 'https://keyvalue.immanuel.co/api/KeyVal/GetValue/987ff5
 const UPDATE_COORDINATOR_URL = 'https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/987ff58c_iotel/active_rest_id';
 
 let activeId: string | null = null;
+const knownBadIds = new Set<string>();
 
 async function getSyncUrl(): Promise<string> {
-  if (activeId) {
+  if (activeId && !knownBadIds.has(activeId)) {
     return `https://api.restful-api.dev/objects/${activeId}`;
   }
   
   try {
     const res = await axios.get(COORDINATOR_URL, { timeout: 2000 });
     if (res.data && typeof res.data === 'string' && res.data.startsWith('ff80')) {
-      activeId = res.data.trim();
-      return `https://api.restful-api.dev/objects/${activeId}`;
+      const fetchedId = res.data.trim();
+      if (!knownBadIds.has(fetchedId)) {
+        activeId = fetchedId;
+        return `https://api.restful-api.dev/objects/${activeId}`;
+      }
     }
   } catch (err: any) {
     console.log('Coordinator read error, generating dynamic replacement:', err.message);
@@ -46,6 +50,7 @@ async function createNewSyncObject() {
     }, { timeout: 2000 });
     if (res.data && res.data.id) {
       activeId = res.data.id;
+      // Register with the coordinator
       await axios.post(`${UPDATE_COORDINATOR_URL}/${activeId}`, {}, { timeout: 2000 });
       console.log('Registered self-healing sync ID in dev:', activeId);
     }
@@ -82,8 +87,16 @@ const config = {
   chatId: process.env.CHAT_ID || '',
 };
 
+let lastPullTime = 0;
+
 // Sync helpers
 async function pullState() {
+  const now = Date.now();
+  if (now - lastPullTime < 5000) {
+    return; // Throttling: only pull once every 5 seconds maximum
+  }
+  lastPullTime = now;
+
   try {
     const url = await getSyncUrl();
     const res = await axios.get(url, { timeout: 2000 });
@@ -109,7 +122,12 @@ async function pullState() {
     console.log('Sync pull note in dev:', error.message);
     if (error.response && (error.response.status === 404 || error.response.status === 405)) {
       console.log('Sync ID expired, resetting active ID in dev...');
+      const badId = activeId;
+      if (badId) {
+        knownBadIds.add(badId);
+      }
       activeId = null;
+      await createNewSyncObject();
     }
   }
 }
@@ -134,7 +152,12 @@ async function pushState() {
     console.log('Sync push error in dev:', error.message);
     if (error.response && (error.response.status === 404 || error.response.status === 405)) {
       console.log('Sync ID expired during push, resetting active ID in dev...');
+      const badId = activeId;
+      if (badId) {
+        knownBadIds.add(badId);
+      }
       activeId = null;
+      await createNewSyncObject();
     }
   }
 }
@@ -157,8 +180,8 @@ async function sendTelegram(message: string) {
 // Router for modular syncing
 const apiRouter = express.Router();
 
-apiRouter.use(async (req, res, next) => {
-  await pullState();
+apiRouter.use((req, res, next) => {
+  pullState().catch((err) => console.log('Background pull error in dev:', err.message));
   next();
 });
 
@@ -199,7 +222,7 @@ apiRouter.post('/esp/data', async (req, res) => {
     await sendTelegram('✅ *ESP32 Connected*');
   }
 
-  await pushState();
+  pushState().catch((err) => console.log('Background push error in dev:', err.message));
 
   res.json({
     relays: {
@@ -217,7 +240,7 @@ apiRouter.post('/relay/toggle', async (req, res) => {
   if (relay) {
     relay.state = !relay.state;
     await sendTelegram(`🔌 *Relay*: ${relay.name} is *${relay.state ? 'ON' : 'OFF'}*`);
-    await pushState();
+    pushState().catch((err) => console.log('Background push error in dev:', err.message));
     res.json({ success: true, newState: relay.state });
   } else {
     res.status(404).json({ error: 'Relay not found' });
@@ -231,7 +254,7 @@ apiRouter.post('/relay/all', async (req, res) => {
     (relayStates as any)[key].state = isOn;
   });
   await sendTelegram(`🔌 *Master Control*: All relays are now *${isOn ? 'ON' : 'OFF'}*`);
-  await pushState();
+  pushState().catch((err) => console.log('Background push error in dev:', err.message));
   res.json({ success: true, state: isOn });
 });
 
@@ -240,7 +263,7 @@ apiRouter.post('/config', async (req, res) => {
   if (botToken) config.botToken = botToken;
   if (chatId) config.chatId = chatId;
   await sendTelegram('🚀 *Config Updated*');
-  await pushState();
+  pushState().catch((err) => console.log('Background push error in dev:', err.message));
   res.json({ success: true });
 });
 
