@@ -8,7 +8,9 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// In-memory state (Note: ephemeral in Vercel)
+const KV_URL = 'https://kvdb.io/bucket_esp32_iot_dashboard_987ff586/all_state';
+
+// In-memory state (acts as cache/fallback)
 let relayStates = {
   relay1: { pin: 5, state: false, name: 'Relay 1' },
   relay2: { pin: 19, state: false, name: 'Relay 2' },
@@ -36,6 +38,42 @@ const config = {
   chatId: process.env.CHAT_ID || '',
 };
 
+// Sync helpers
+async function pullState() {
+  try {
+    const res = await axios.get(KV_URL, { timeout: 2500 });
+    if (res.data && typeof res.data === 'object') {
+      if (res.data.relayStates) relayStates = res.data.relayStates;
+      if (res.data.sensorData) sensorData = res.data.sensorData;
+      if (res.data.sensorHistory) sensorHistory = res.data.sensorHistory;
+      if (res.data.espStatus) espStatus = res.data.espStatus;
+      if (res.data.config) {
+        if (res.data.config.botToken) config.botToken = res.data.config.botToken;
+        if (res.data.config.chatId) config.chatId = res.data.config.chatId;
+      }
+    }
+  } catch (error: any) {
+    console.error('Failed to pull state from KV in Dev:', error.message);
+  }
+}
+
+async function pushState() {
+  try {
+    await axios.post(KV_URL, {
+      relayStates,
+      sensorData,
+      sensorHistory,
+      espStatus,
+      config
+    }, { 
+      timeout: 2500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (error: any) {
+    console.error('Failed to push state to KV in Dev:', error.message);
+  }
+}
+
 // Helper: Send Telegram Notification
 async function sendTelegram(message: string) {
   if (!config.botToken || !config.chatId) return;
@@ -51,8 +89,16 @@ async function sendTelegram(message: string) {
   }
 }
 
-// Routes
-app.get('/api/status', (req, res) => {
+// Router for modular syncing
+const apiRouter = express.Router();
+
+apiRouter.use(async (req, res, next) => {
+  await pullState();
+  next();
+});
+
+// Routes Definitions
+apiRouter.get('/status', (req, res) => {
   const now = Date.now();
   espStatus.isOnline = now - espStatus.lastPing < 60000;
   res.json({
@@ -64,11 +110,11 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-app.get('/api/history', (req, res) => {
+apiRouter.get('/history', (req, res) => {
   res.json(sensorHistory);
 });
 
-app.post('/api/esp/data', (req, res) => {
+apiRouter.post('/esp/data', async (req, res) => {
   const { temperature, humidity } = req.body;
   if (temperature !== undefined && humidity !== undefined) {
     sensorData = { temperature, humidity, lastUpdate: Date.now() };
@@ -84,7 +130,11 @@ app.post('/api/esp/data', (req, res) => {
   espStatus.lastPing = Date.now();
   espStatus.isOnline = true;
 
-  if (wasOffline) sendTelegram('✅ *ESP32 Connected*');
+  if (wasOffline) {
+    await sendTelegram('✅ *ESP32 Connected*');
+  }
+
+  await pushState();
 
   res.json({
     relays: {
@@ -96,37 +146,40 @@ app.post('/api/esp/data', (req, res) => {
   });
 });
 
-app.post('/api/relay/toggle', async (req, res) => {
+apiRouter.post('/relay/toggle', async (req, res) => {
   const { relayId } = req.body;
   const relay = (relayStates as any)[relayId];
   if (relay) {
     relay.state = !relay.state;
     await sendTelegram(`🔌 *Relay*: ${relay.name} is *${relay.state ? 'ON' : 'OFF'}*`);
+    await pushState();
     res.json({ success: true, newState: relay.state });
   } else {
     res.status(404).json({ error: 'Relay not found' });
   }
 });
 
-app.post('/api/relay/all', async (req, res) => {
+apiRouter.post('/relay/all', async (req, res) => {
   const { state } = req.body;
   const isOn = !!state;
-  
   Object.keys(relayStates).forEach((key) => {
     (relayStates as any)[key].state = isOn;
   });
-
   await sendTelegram(`🔌 *Master Control*: All relays are now *${isOn ? 'ON' : 'OFF'}*`);
+  await pushState();
   res.json({ success: true, state: isOn });
 });
 
-app.post('/api/config', (req, res) => {
+apiRouter.post('/config', async (req, res) => {
   const { botToken, chatId } = req.body;
   if (botToken) config.botToken = botToken;
   if (chatId) config.chatId = chatId;
-  sendTelegram('🚀 *Config Updated*');
+  await sendTelegram('🚀 *Config Updated*');
+  await pushState();
   res.json({ success: true });
 });
+
+app.use('/api', apiRouter);
 
 // Vite/Serve Logic for Local Development
 async function startServer() {
