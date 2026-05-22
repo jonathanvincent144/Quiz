@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-const KV_URL = 'https://kvdb.io/bucket_esp32_iot_dashboard_987ff586/all_state';
+const SYNC_URL = 'https://api.restful-api.dev/objects/ff8081819d82fab6019e4e3895cd671d';
 
 // In-memory state (acts as cache/fallback)
 let relayStates = {
@@ -41,36 +41,41 @@ const config = {
 // Sync helpers
 async function pullState() {
   try {
-    const res = await axios.get(KV_URL, { timeout: 2500 });
-    if (res.data && typeof res.data === 'object') {
-      if (res.data.relayStates) relayStates = res.data.relayStates;
-      if (res.data.sensorData) sensorData = res.data.sensorData;
-      if (res.data.sensorHistory) sensorHistory = res.data.sensorHistory;
-      if (res.data.espStatus) espStatus = res.data.espStatus;
-      if (res.data.config) {
-        if (res.data.config.botToken) config.botToken = res.data.config.botToken;
-        if (res.data.config.chatId) config.chatId = res.data.config.chatId;
+    const res = await axios.get(SYNC_URL, { timeout: 2000 });
+    if (res.data && res.data.data) {
+      const db = res.data.data;
+      if (db.relayStates) relayStates = db.relayStates;
+      if (db.sensorData) sensorData = db.sensorData;
+      if (db.sensorHistory) sensorHistory = db.sensorHistory;
+      if (db.espStatus) espStatus = db.espStatus;
+      if (db.config) {
+        if (db.config.botToken) config.botToken = db.config.botToken;
+        if (db.config.chatId) config.chatId = db.config.chatId;
       }
     }
   } catch (error: any) {
-    console.error('Failed to pull state from KV in Dev:', error.message);
+    // Graceful fallback debug log
+    console.log('Sync pull note in dev:', error.message);
   }
 }
 
 async function pushState() {
   try {
-    await axios.post(KV_URL, {
-      relayStates,
-      sensorData,
-      sensorHistory,
-      espStatus,
-      config
+    await axios.put(SYNC_URL, {
+      name: 'ESP32_IoT_Dashboard_State',
+      data: {
+        relayStates,
+        sensorData,
+        sensorHistory,
+        espStatus,
+        config
+      }
     }, { 
-      timeout: 2500,
+      timeout: 2000,
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error: any) {
-    console.error('Failed to push state to KV in Dev:', error.message);
+    console.log('Sync push error in dev:', error.message);
   }
 }
 
