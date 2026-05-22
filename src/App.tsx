@@ -49,13 +49,41 @@ export default function App() {
   const [voiceTooltip, setVoiceTooltip] = useState<string | null>(null);
   const [isRunningVariation, setIsRunningVariation] = useState<string | null>(null);
 
+  // Direct LAN control state variables
+  const [directLanMode, setDirectLanMode] = useState<boolean>(() => {
+    return localStorage.getItem('directLanMode') === 'true';
+  });
+  const [espIp, setEspIp] = useState<string>(() => {
+    return localStorage.getItem('espIp') || '10.236.137.114';
+  });
+  const [lanEndpointPattern, setLanEndpointPattern] = useState<string>(() => {
+    return localStorage.getItem('lanEndpointPattern') || 'json_post';
+  });
+
+  const [localIpInput, setLocalIpInput] = useState(espIp);
+  const [localLanToggle, setLocalLanToggle] = useState(directLanMode);
+  const [localPattern, setLocalPattern] = useState(lanEndpointPattern);
+
   const fetchData = async () => {
     try {
       const [statusRes, historyRes] = await Promise.all([
         axios.get('/api/status'),
         axios.get('/api/history')
       ]);
-      setData(statusRes.data);
+      
+      // If direct LAN mode is enabled, we merge fetched data but keep local optimistic updates primary
+      if (directLanMode) {
+        setData((prev: any) => {
+          if (!prev) return statusRes.data;
+          // Only pull sensors & other parameters from the cloud, and keep relayStates if they are being updated locally
+          return {
+            ...statusRes.data,
+            relayStates: prev.relayStates || statusRes.data.relayStates
+          };
+        });
+      } else {
+        setData(statusRes.data);
+      }
       setHistory(historyRes.data);
       setError(null);
     } catch (err) {
@@ -70,10 +98,75 @@ export default function App() {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [directLanMode]);
+
+  useEffect(() => {
+    if (configOpen) {
+      setLocalIpInput(espIp);
+      setLocalLanToggle(directLanMode);
+      setLocalPattern(lanEndpointPattern);
+    }
+  }, [configOpen, espIp, directLanMode, lanEndpointPattern]);
 
   const toggleRelay = async (relayId: string) => {
     setBtnLoading(relayId);
+
+    if (directLanMode) {
+      const pinMap: Record<string, number> = { relay1: 5, relay2: 19, relay3: 18, relay4: 23 };
+      const currentRelay = data?.relayStates?.[relayId];
+      const targetState = currentRelay ? !currentRelay.state : true;
+
+      // Optimistic update for zero-delay feed back
+      setData((prev: any) => {
+        if (!prev || !prev.relayStates) return prev;
+        return {
+          ...prev,
+          relayStates: {
+            ...prev.relayStates,
+            [relayId]: {
+              ...prev.relayStates[relayId],
+              state: targetState
+            }
+          }
+        };
+      });
+
+      try {
+        if (lanEndpointPattern === 'query_pin') {
+          const pin = pinMap[relayId] || 5;
+          await axios.get(`http://${espIp}/toggle?pin=${pin}&state=${targetState ? 1 : 0}`, { timeout: 1500 });
+        } else if (lanEndpointPattern === 'query_relayId') {
+          await axios.get(`http://${espIp}/toggle?relayId=${relayId}`, { timeout: 1500 });
+        } else {
+          // json_post API (matches our standard backend `/api/relay/toggle` body format)
+          await axios.post(`http://${espIp}/api/relay/toggle`, { relayId }, { timeout: 1500 });
+        }
+
+        // Keep cloud syncing in the background for active integration logs and consistency
+        axios.post('/api/relay/toggle', { relayId }).catch((e) => console.log('Cloud sync error:', e.message));
+      } catch (err: any) {
+        console.error('Direct LAN request failed:', err);
+        // Revert optimistic update
+        setData((prev: any) => {
+          if (!prev || !prev.relayStates) return prev;
+          return {
+            ...prev,
+            relayStates: {
+              ...prev.relayStates,
+              [relayId]: {
+                ...prev.relayStates[relayId],
+                state: !targetState
+              }
+            }
+          };
+        });
+        alert(`Koneksi Langsung ke ESP32 Gagal!\nIP: http://${espIp}\nError: ${err.message}\n\nPastikan HP/Laptop Anda berada dalam satu jaringan Wi-Fi dengan ESP32.\n\nCatatan Keamanan HTTPS: Browser memblokir HTTP secara default. Jika gagal, silakan aktifkan "Insecure Content" di Pengaturan Origin browser Anda.`);
+      } finally {
+        setBtnLoading(null);
+      }
+      return;
+    }
+
     try {
       await axios.post('/api/relay/toggle', { relayId });
       await fetchData();
@@ -86,6 +179,42 @@ export default function App() {
 
   const toggleAll = async (state: boolean) => {
     setBtnLoading('master-' + state);
+
+    if (directLanMode) {
+      // Optimistic update
+      setData((prev: any) => {
+        if (!prev || !prev.relayStates) return prev;
+        const updated = { ...prev.relayStates };
+        Object.keys(updated).forEach(k => {
+          updated[k] = { ...updated[k], state };
+        });
+        return { ...prev, relayStates: updated };
+      });
+
+      try {
+        if (lanEndpointPattern === 'query_pin') {
+          await Promise.all([
+            axios.get(`http://${espIp}/toggle?pin=5&state=${state ? 1 : 0}`, { timeout: 1500 }),
+            axios.get(`http://${espIp}/toggle?pin=19&state=${state ? 1 : 0}`, { timeout: 1500 }),
+            axios.get(`http://${espIp}/toggle?pin=18&state=${state ? 1 : 0}`, { timeout: 1500 }),
+            axios.get(`http://${espIp}/toggle?pin=23&state=${state ? 1 : 0}`, { timeout: 1500 }),
+          ]);
+        } else {
+          await axios.post(`http://${espIp}/api/relay/all`, { state }, { timeout: 1500 });
+        }
+
+        // Keep cloud syncing in background
+        axios.post('/api/relay/all', { state }).catch((e) => console.log('Cloud master state sync error:', e.message));
+      } catch (err: any) {
+        console.error('Direct LAN Master toggle failed:', err);
+        fetchData();
+        alert(`Koneksi Langsung Master Gagal!\nIP: http://${espIp}\nError: ${err.message}`);
+      } finally {
+        setBtnLoading(null);
+      }
+      return;
+    }
+
     try {
       await axios.post('/api/relay/all', { state });
       await fetchData();
@@ -216,6 +345,16 @@ export default function App() {
     e.preventDefault();
     try {
       await axios.post('/api/config', configForm);
+      
+      // Save direct LAN variables
+      localStorage.setItem('directLanMode', String(localLanToggle));
+      localStorage.setItem('espIp', localIpInput);
+      localStorage.setItem('lanEndpointPattern', localPattern);
+      
+      setDirectLanMode(localLanToggle);
+      setEspIp(localIpInput);
+      setLanEndpointPattern(localPattern);
+
       setConfigOpen(false);
       fetchData();
     } catch (err) {
@@ -247,6 +386,12 @@ export default function App() {
           <h1 className="text-xl font-bold text-white tracking-tight">IOTEL <span className="text-indigo-400 font-normal">Dashboard</span></h1>
         </div>
         <div className="flex items-center space-x-6">
+          {directLanMode && (
+            <div className="flex items-center space-x-1.5 border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 rounded-full text-[10px] text-emerald-400 font-bold uppercase tracking-wider">
+              <Cpu size={12} className="text-emerald-400 animate-pulse" />
+              <span>LAN AKTIF ({espIp})</span>
+            </div>
+          )}
           <div className="flex items-center space-x-2">
             <span className={cn("w-2 h-2 rounded-full", espStatus?.isOnline ? "bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-red-500")} />
             <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
@@ -436,6 +581,20 @@ export default function App() {
               <StatusRow label="ESP32 Device" status={espStatus?.isOnline ? 'ONLINE' : 'OFFLINE'} type={espStatus?.isOnline ? 'success' : 'danger'} />
               <StatusRow label="Backend API" status={apiStatus || (error ? 'ERROR' : 'OFFLINE')} type={apiStatus === 'Online' ? 'success' : (error ? 'danger' : 'warning')} />
             </div>
+            {(espStatus?.ip || espStatus?.publicIp) && (
+              <div className="mt-4 pt-4 border-t border-slate-800/80 space-y-2">
+                <div className="flex justify-between items-center text-[11px] font-mono">
+                  <span className="text-slate-500">Public IP:</span>
+                  <span className="text-indigo-400 font-semibold">{espStatus.publicIp || 'N/A'}</span>
+                </div>
+                {espStatus.ip && (
+                  <div className="flex justify-between items-center text-[11px] font-mono">
+                    <span className="text-slate-500">Local IP:</span>
+                    <span className="text-emerald-400 font-semibold">{espStatus.ip}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Telegram Logs Area */}
@@ -508,7 +667,7 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md bg-brand-card border border-slate-700 rounded-3xl p-8 shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
+              className="relative w-full max-w-lg bg-brand-card border border-slate-700 rounded-3xl p-8 shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-y-auto max-h-[90vh] custom-scrollbar"
             >
               <div className="flex items-center justify-between mb-8">
                 <h2 className="text-xl font-bold text-white flex items-center gap-3">
@@ -522,29 +681,94 @@ export default function App() {
                 </button>
               </div>
 
-              <form onSubmit={saveConfig} className="space-y-5">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest pl-1">Telegram Bot Token</label>
-                  <input 
-                    type="password"
-                    placeholder="6812903522:AAH..."
-                    value={configForm.botToken}
-                    onChange={(e) => setConfigForm({...configForm, botToken: e.target.value})}
-                    className="w-full bg-brand-bg border border-slate-800 rounded-2xl px-5 py-4 text-sm text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all placeholder:text-slate-700"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest pl-1">Primary Chat ID</label>
-                  <input 
-                    type="text"
-                    placeholder="99426182..."
-                    value={configForm.chatId}
-                    onChange={(e) => setConfigForm({...configForm, chatId: e.target.value})}
-                    className="w-full bg-brand-bg border border-slate-800 rounded-2xl px-5 py-4 text-sm text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all placeholder:text-slate-700"
-                  />
+              <form onSubmit={saveConfig} className="space-y-6">
+                {/* Cloud & Telegram Setup */}
+                <div className="space-y-4">
+                  <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Cloud Messaging & Alert</h3>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest pl-1">Telegram Bot Token</label>
+                    <input 
+                      type="password"
+                      placeholder="6812903522:AAH..."
+                      value={configForm.botToken}
+                      onChange={(e) => setConfigForm({...configForm, botToken: e.target.value})}
+                      className="w-full bg-brand-bg border border-slate-800 rounded-2xl px-5 py-3.5 text-sm text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all placeholder:text-slate-700"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest pl-1">Primary Chat ID</label>
+                    <input 
+                      type="text"
+                      placeholder="99426182..."
+                      value={configForm.chatId}
+                      onChange={(e) => setConfigForm({...configForm, chatId: e.target.value})}
+                      className="w-full bg-brand-bg border border-slate-800 rounded-2xl px-5 py-3.5 text-sm text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all placeholder:text-slate-700"
+                    />
+                  </div>
                 </div>
 
-                <div className="p-5 bg-indigo-600/5 rounded-2xl border border-indigo-500/10 mt-8">
+                {/* Direct LAN Mode Section */}
+                <div className="pt-6 border-t border-slate-800/80 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider">Mode LAN Langsung (Low Delay)</h4>
+                      <p className="text-[10px] text-slate-500">Kirim request relay langsung ke IP ESP32</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setLocalLanToggle(!localLanToggle)}
+                      className={cn(
+                        "w-12 h-6 rounded-full flex items-center px-1 transition-all duration-300 relative focus:outline-none",
+                        localLanToggle ? "bg-emerald-500/10 border border-emerald-500/50" : "bg-slate-800 border border-slate-600"
+                      )}
+                    >
+                      <div className={cn(
+                        "w-4 h-4 rounded-full shadow-lg transition-transform duration-300",
+                        localLanToggle ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] translate-x-6" : "bg-slate-600 translate-x-0"
+                      )} />
+                    </button>
+                  </div>
+
+                  {localLanToggle && (
+                    <div className="space-y-4 pt-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest pl-1">IP Address ESP32</label>
+                        <input
+                          type="text"
+                          placeholder="10.236.137.114"
+                          value={localIpInput}
+                          onChange={(e) => setLocalIpInput(e.target.value)}
+                          className="w-full bg-brand-bg border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:outline-none focus:border-indigo-500 transition-all font-mono"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest pl-1">Protocol / API Pattern</label>
+                        <select
+                          value={localPattern}
+                          onChange={(e) => setLocalPattern(e.target.value)}
+                          className="w-full bg-brand-bg border border-slate-800 rounded-xl px-4 py-3 text-xs text-white focus:outline-none focus:border-indigo-400 transition-all font-sans"
+                        >
+                          <option value="json_post">API Endpoint (JSON POST) - http://{"{IP}"}/api/relay/toggle</option>
+                          <option value="query_pin">Query GET Pin (HTTP GET) - http://{"{IP}"}/toggle?pin=X&state=Y</option>
+                          <option value="query_relayId">Query GET ID (HTTP GET) - http://{"{IP}"}/toggle?relayId=relayX</option>
+                        </select>
+                      </div>
+
+                      <div className="p-4 bg-amber-600/5 rounded-xl border border-amber-500/15 text-[10px] text-amber-400 font-mono leading-relaxed space-y-1">
+                        <p className="font-bold flex items-center gap-1">⚠️ Perhatian Keamanan HTTPS / Mixed Content:</p>
+                        <p>Dashboard berjalan di HTTPS, sedangkan ESP32 Anda menggunakan HTTP IP Lokal. Agar browser Anda tidak memblokir sinyal kontrol LAN:</p>
+                        <ol className="list-decimal list-inside space-y-0.5 mt-1 text-slate-400">
+                          <li>Klik ikon <strong className="text-amber-300">Gembok / Site Settings</strong> di bilah URL browser Anda.</li>
+                          <li>Cari menu <strong className="text-amber-300">Insecure Content</strong> / Konten tidak aman.</li>
+                          <li>Ubah dari "Block" menjadi <strong className="text-emerald-400">Allow (Izinkan)</strong>.</li>
+                        </ol>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 bg-indigo-600/5 rounded-2xl border border-indigo-500/10">
                   <p className="text-[10px] text-slate-500 leading-relaxed font-mono">
                     <span className="text-indigo-400">INFO:</span> Status notifications including relay toggles and system heartbeats will be pushed to this endpoint immediately after saving.
                   </p>
@@ -552,7 +776,7 @@ export default function App() {
 
                 <button 
                   type="submit"
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl shadow-xl shadow-indigo-600/10 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mt-4"
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl shadow-xl shadow-indigo-600/10 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
                 >
                   <Send size={18} /> SYNC CONFIGURATION
                 </button>

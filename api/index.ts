@@ -76,6 +76,8 @@ let sensorHistory: any[] = [];
 let espStatus = {
   isOnline: false,
   lastPing: 0,
+  ip: '',
+  publicIp: '',
 };
 
 const config = {
@@ -100,10 +102,10 @@ async function pullState() {
       const db = res.data.data;
       if (db.relayStates) {
         relayStates = {
-          relay1: db.relayStates.relay1 || { pin: 5, state: false, name: 'Relay 1' },
-          relay2: db.relayStates.relay2 || { pin: 19, state: false, name: 'Relay 2' },
-          relay3: db.relayStates.relay3 || { pin: 18, state: false, name: 'Relay 3' },
-          relay4: db.relayStates.relay4 || { pin: 23, state: false, name: 'Relay 4' },
+          relay1: { pin: 5, state: db.relayStates.relay1?.state ?? false, name: db.relayStates.relay1?.name || 'Relay 1' },
+          relay2: { pin: 19, state: db.relayStates.relay2?.state ?? false, name: db.relayStates.relay2?.name || 'Relay 2' },
+          relay3: { pin: 18, state: db.relayStates.relay3?.state ?? false, name: db.relayStates.relay3?.name || 'Relay 3' },
+          relay4: { pin: 23, state: db.relayStates.relay4?.state ?? false, name: db.relayStates.relay4?.name || 'Relay 4' },
         };
       }
       if (db.sensorData) sensorData = db.sensorData;
@@ -197,7 +199,7 @@ apiRouter.get('/history', (req, res) => {
 });
 
 apiRouter.post('/esp/data', async (req, res) => {
-  const { temperature, humidity } = req.body;
+  const { temperature, humidity, ip } = req.body;
   if (temperature !== undefined && humidity !== undefined) {
     sensorData = { temperature, humidity, lastUpdate: Date.now() };
     sensorHistory.push({
@@ -211,6 +213,15 @@ apiRouter.post('/esp/data', async (req, res) => {
   const wasOffline = !espStatus.isOnline;
   espStatus.lastPing = Date.now();
   espStatus.isOnline = true;
+  
+  if (ip) {
+    espStatus.ip = ip;
+  }
+  
+  const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  if (typeof rawIp === 'string' && rawIp) {
+    espStatus.publicIp = rawIp.split(',')[0].trim();
+  }
 
   if (wasOffline) {
     await sendTelegram('✅ *ESP32 Connected*');
